@@ -1,18 +1,246 @@
 package main 
 import (
-    "fmt"
-    "github.com/julienschmidt/httprouter"
-    "net/http"
-    "encoding/json"
-    "gopkg.in/mgo.v2"
-    "gopkg.in/mgo.v2/bson"
-    "strconv"
-    "log"
-    "github.com/anweiss/uber-api-golang/uber"
-    "sort"
-    "bytes"
-    "io/ioutil"
+"fmt"
+"math/rand"
+"strings"
+"net/http"
+"github.com/julienschmidt/httprouter"
+"encoding/json"
+"io/ioutil"
+"os"
+"log"
+"strconv"
+"gopkg.in/mgo.v2"
+"gopkg.in/mgo.v2/bson"
+"github.com/anweiss/uber-api-golang/uber"
+ "sort"
+ "reflect"
+"bytes"
 )
+type (UserController struct {
+	session *mgo.Session
+	})
+type Request struct {
+	Name string `json:"name"`
+	Address string `json:"address"`
+	City string `json:"city" `
+	State string `json:"state"`
+	Zip string `json:"zip"`
+}
+	
+type Response struct {
+	Address    string `json:"address" bson:"address"`
+	City       string `json:"city" bson:"city"`
+	Coordinate struct {
+	Lat float64 `json:"lat" bson:"lat"`
+	Lng float64 `json:"lng" bson:"lng"`
+	} `json:"coordinate" bson:"coordinate"`
+	ID    int   `json:"id" bson:"id"`
+	Name  string `json:"name" bson:"name"`
+	State string `json:"state" bson:"state"`
+	Zip   string `json:"zip" bson:"zip"`
+}
+//JSON struct from GooGle Maps Api
+type GoogleMaps struct {
+	Results []struct {
+		AddressComponents []struct {
+			LongName string `json:"long_name"`
+			ShortName string `json:"short_name"`
+			Types []string `json:"types"`
+		} `json:"address_components"`
+		FormattedAddress string `json:"formatted_address"`
+		Geometry struct {
+			Location struct {
+				Lat float64 `json:"lat"`
+				Lng float64 `json:"lng"`
+			} `json:"location"`
+			LocationType string `json:"location_type"`
+			Viewport struct {
+				Northeast struct {
+					Lat float64 `json:"lat"`
+					Lng float64 `json:"lng"`
+				} `json:"northeast"`
+				Southwest struct {
+					Lat float64 `json:"lat"`
+					Lng float64 `json:"lng"`
+				} `json:"southwest"`
+			} `json:"viewport"`
+		} `json:"geometry"`
+		PlaceID string `json:"place_id"`
+		Types []string `json:"types"`
+	} `json:"results"`
+	Status string `json:"status"`
+}
+
+//Function for HTTP POST
+func  PostRequest(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
+	decoder:= json.NewDecoder(r.Body)
+
+	var u Request
+	err:= decoder.Decode(&u)
+	if err!=nil {
+		log.Println(err.Error())
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	var c Response
+    c.Name= u.Name
+    c.Address= u.Address
+    c.City= u.City
+    c.State= u.State
+    c.Zip= u.Zip 
+    c.ID=rand.Intn(10000000)
+    var fulladdress string 
+    fulladdress= c.Address+" "+c.City
+    latresponse := GetLatitude(fulladdress)
+    longresponse := GetLongitude(fulladdress)
+    c.Coordinate.Lat= latresponse
+    c.Coordinate.Lng= longresponse
+    sess:=getSession();
+    collection:= sess.DB("trip-planner").C("locations")
+    e:= collection.Insert(c)
+    if e!=nil {
+    	panic(e)
+    }
+
+	uj,_ := json.Marshal(c)
+	w.Header().Set("Content-Type", "application/json")
+    w.WriteHeader(201)
+	fmt.Fprintf(w, "%s", uj)
+}
+//Function to obtain Latitude coordinates for a user's location
+func GetLatitude(fulladdress string) float64{
+	var Ad GoogleMaps
+	var lat64 float64
+	Baseur:= "http://maps.google.com/maps/api/geocode/json?address="
+	Addur:= fulladdress
+	Urlf:= Baseur + Addur
+	Urlf = strings.Replace(Urlf," ","%20",-1)
+    	apiRes, err:= http.Get(Urlf)
+	if err!=nil {
+		fmt.Printf("error occurred")
+		fmt.Printf("%s", err)
+		os.Exit(1)
+	}else{
+		defer apiRes.Body.Close()
+		contents, err:= ioutil.ReadAll(apiRes.Body)
+		if err != nil {
+			fmt.Printf("%s", err)
+			os.Exit(1)
+		}
+	   err= json.Unmarshal(contents, &Ad)
+	   if err!=nil {
+	   	fmt.Println("her is the error")
+	   	fmt.Printf("%s", err)
+	   	os.Exit(1)
+	   }
+	 lat64 = Ad.Results[0].Geometry.Location.Lat
+	}
+	 return lat64
+}
+
+//Function to access Longitude coordinates for a user's location
+func GetLongitude(fulladdress string) float64{
+	var s GoogleMaps
+	var long64 float64
+	Baseurl:= "http://maps.google.com/maps/api/geocode/json?address="
+	Addurl:= fulladdress
+	Url:= Baseurl + Addurl
+	Url = strings.Replace(Url," ","%20",-1)
+	apiResponse, err:= http.Get(Url)
+	if err!=nil {
+		fmt.Printf("error occurred")
+		fmt.Printf("%s", err)
+		os.Exit(1)
+	}else{
+		defer apiResponse.Body.Close()
+		contents, err:= ioutil.ReadAll(apiResponse.Body)
+		if err != nil {
+			fmt.Printf("%s", err)
+			os.Exit(1)
+		}
+		err= json.Unmarshal(contents, &s)
+		if err!=nil {
+			fmt.Println("Here is the error from longitude")
+			fmt.Printf("%s", err)
+			os.Exit(1)
+		}
+		long64=s.Results[0].Geometry.Location.Lng		
+}
+return long64
+}
+
+//Function to obtain HTTP GET Request
+func  GetRequest(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
+	 var updatedmsg Response
+	 a:= p.ByName("id")
+	 ac,_ := strconv.Atoi(a)
+	   sess:=getSession();
+  er := sess.DB("trip-planner").C("locations").Find(bson.M{"id": ac}).One(&updatedmsg)
+  if er!=nil {
+  	panic(er)
+  }
+	uj,_ := json.Marshal(updatedmsg)
+	w.Header().Set("Content-Type", "application/json")
+    w.WriteHeader(200)
+	fmt.Fprintf(w, "%s", uj)
+}
+
+//Function to obtain HTTP DELETE Request
+func  DeleteRequest(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
+	 a:= p.ByName("id")
+	 ac,_ := strconv.Atoi(a)
+	   sess:=getSession();
+  er := sess.DB("trip-planner").C("locations").Remove(bson.M{"id": ac})
+  if er!=nil {
+  	panic(er)
+  }
+	w.WriteHeader(200)
+}
+
+//Function to access HTTP PUT Request
+func  PutRequest(w http.ResponseWriter, res *http.Request, p httprouter.Params){
+	decoder:= json.NewDecoder(res.Body)
+
+	var r Request
+	err:= decoder.Decode(&r)
+	if err!=nil {
+		log.Println(err.Error())
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	var oldupdatingmsg Response
+	var updatingmsg Response
+	init:= p.ByName("id")
+	abs, _:= strconv.Atoi(init)
+	newsession:= getSession();
+	errors:= newsession.DB("trip-planner").C("locations").Find(bson.M{"id": abs}).One(&oldupdatingmsg)
+	if errors!=nil {
+		panic(errors)
+	}
+		updatingmsg.Name= r.Name
+	    updatingmsg.Address= r.Address
+	    updatingmsg.City= r.City
+	    updatingmsg.Zip= r.Zip
+	    updatingmsg.State= r.State
+        updatingmsg.ID= abs
+	var updateaddress string
+	updateaddress= updatingmsg.Address+updatingmsg.City
+	updatelatresp:= GetLatitude(updateaddress)
+	updatelongresp:= GetLongitude(updateaddress)
+	updatingmsg.Coordinate.Lat= updatelatresp
+	updatingmsg.Coordinate.Lng= updatelongresp
+	collec:= newsession.DB("trip-planner").C("locations")
+    ef:= collec.Update(oldupdatingmsg,updatingmsg)
+    if ef!=nil {
+    	panic(ef)
+    }
+    updatejson,_ := json.Marshal(updatingmsg)
+	w.Header().Set("Content-Type", "application/json")
+    w.WriteHeader(201)
+	fmt.Fprintf(w, "%s", updatejson)
+}
+
 
 type UserPostRequest struct {
 	StartingPositionid string`json:"starting_from_location_id"`
@@ -84,8 +312,14 @@ type Product struct {
   Image       string `json:"image"`
 }
 
+
+
+
+
 var id int
 var tripID int
+
+
 func PlanTrip(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
 	decoder := json.NewDecoder(r.Body)
 	var u UserPostRequest
@@ -109,7 +343,7 @@ func PlanTrip(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
     if error != nil {
          panic(error)
      }
-     var updatedmsg ResponsefromDB
+     var updatedmsg Response
      sess:= getSession()
 	er := sess.DB("trip-planner").C("locations").Find(bson.M{"id": startingidstring}).One(&updatedmsg)
     if er!=nil {
@@ -120,8 +354,8 @@ func PlanTrip(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
   totalprice := 0
   totaldistance := 0.0
   totalduration := 0
-  bestroute := make([]float64, len(u.OtherPositionids))
-  m := make(map[float64]string)
+  bestroute := make([]int, len(u.OtherPositionids))
+  m := make(map[int]string)
   for _, ids := range u.OtherPositionids{
   	otherids, err1 := strconv.Atoi(ids)
   	 if err1 != nil {
@@ -144,11 +378,11 @@ func PlanTrip(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
         totaldistance=totaldistance+x.Prices[0].Distance;
         totalduration=totalduration+x.Prices[0].Duration;
         totalprice=totalprice+x.Prices[0].LowEstimate;
-        bestroute[index]=x.Prices[0].Distance;
-        m[x.Prices[0].Distance]=ids;
+        bestroute[index]=x.Prices[0].LowEstimate;
+        m[x.Prices[0].LowEstimate]=ids;
         index=index+1;
   }
-  sort.Float64s(bestroute)
+  sort.Ints(bestroute)
   var postuber UserPostResponse
   tripID= tripID+1
   postuber.Id=strconv.Itoa(tripID)
@@ -179,7 +413,6 @@ func PlanTrip(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
     fmt.Fprintf(w, "%s", js)
 }
 
-
 func GetTrip(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
 	var getquery UserPostResponse
 	ac:= p.ByName("id")
@@ -197,6 +430,7 @@ func GetTrip(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
 
 var currentPos int
 var otherint int 
+
 
 func PutTrip(w http.ResponseWriter, r*http.Request, p httprouter.Params) {
   //ac:= p.ByName("id")
@@ -219,6 +453,8 @@ func PutTrip(w http.ResponseWriter, r*http.Request, p httprouter.Params) {
             fmt.Println(err)
         }
         fmt.Println(ids)
+        fmt.Println(reflect.TypeOf(ids))
+        
    }else {
        ids, err := strconv.Atoi(dbresult.BestrouteIds[currentPos-1])
    
@@ -227,11 +463,13 @@ func PutTrip(w http.ResponseWriter, r*http.Request, p httprouter.Params) {
             fmt.Println(err)
         }
         fmt.Println(ids)
+      
    }
 
   err := sessionss.DB("trip-planner").C("locations").Find(bson.M{"id": ids}).One(&r1)
   if err!=nil {
     fmt.Println("Here is the error2")
+    log.Println(err.Error())
     panic(err)
   }
   
@@ -318,20 +556,26 @@ if finalresponse.Status != "completed" {
 }
 
 
+
+
 func main() {
-	id=0
-	tripID = 0
-	uberrouter := httprouter.New()
-	uberrouter.POST("/", PlanTrip) //For First Requirement
-	uberrouter.GET("/:id", GetTrip)//For Second Requirement
-	uberrouter.PUT("/request/:id", PutTrip)//for Third Requirement
+	uberrouter:= httprouter.New()
+	uberrouter.GET("/:id", GetRequest)
+	uberrouter.POST("/", PostRequest)
+	uberrouter.DELETE("/:id", DeleteRequest)
+	uberrouter.PUT("/:id", PutRequest)
+
+	uberrouter.POST("/trip", PlanTrip) //For First Requirement
+	uberrouter.GET("/:id/trip", GetTrip)//For Second Requirement
+	uberrouter.PUT("/:id/request", PutTrip)//for Third Requirement
 	log.Fatal(http.ListenAndServe(":8011", uberrouter))
 }
 
+//Function to connect to MongoDB
 func getSession() *mgo.Session {
-	connect, err := mgo.Dial("mongodb://suyash:123@ds031531.mongolab.com:31531/trip-planner")
-	if err!=nil {
-		panic (err)
-	}
-	return connect
+	connect, err:= mgo.Dial("mongodb://suyash:123@ds031531.mongolab.com:31531/trip-planner")
+	if err!= nil {
+			panic(err)
+		}	
+		return connect
 }
